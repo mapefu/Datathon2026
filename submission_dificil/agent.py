@@ -22,7 +22,9 @@ from __future__ import annotations
 import json
 import math
 import time
+import uuid
 from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 
@@ -31,6 +33,14 @@ try:
     from scipy.optimize import linprog
 except Exception:  # pragma: no cover
     sparse = linprog = None
+
+# ── RawTree observability (offline-safe) ──────────────────────────────
+try:
+    from rawtree_logger import RawTreeLogger
+    _rt = RawTreeLogger()
+except Exception:  # pragma: no cover  (sin rawtree_logger → sin observabilidad)
+    _rt = None  # type: ignore[assignment]
+
 import base64
 
 ETA = math.sqrt(0.9)
@@ -763,4 +773,21 @@ class BatteryAgent:
                 rows.append(raw[h] + r)
             if rows:
                 scen = np.vstack(rows)
-        return self.lp.first_action(w, net, soc, self.cap, self.p_max, v, scen)
+        p = self.lp.first_action(w, net, soc, self.cap, self.p_max, v, scen)
+
+        # ── RawTree logging (offline-safe) ───────────────────────────────
+        try:
+            pfloat = float(p) if p is not None else 0.0
+            _rt.log_decision(
+                timestamp=str(t),
+                idx=int(key), soc_kwh=soc, soc_pct=soc / self.cap * 100 if self.cap > 0 else 0,
+                cap_kwh=self.cap, power_kw=pfloat,
+                price=float(f["price"][0]) if len(f["price"]) else 0, co2=float(f["co2"][0]) if len(f["co2"]) else 0,
+                load_net=float(net[0]) if len(net) else 0,
+                mode="dificil", horizon=H, scenarios=scen.shape[1] if scen is not None else 0,
+                lp_time=0.0, elapsed_total=_ELAPSED[0],
+            )
+        except Exception:
+            pass
+
+        return p

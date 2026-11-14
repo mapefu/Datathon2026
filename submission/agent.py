@@ -34,6 +34,13 @@ import numpy as np
 from scipy import sparse
 from scipy.optimize import linprog
 
+# ── RawTree observability (offline-safe) ──────────────────────────────
+try:
+    from rawtree_logger import RawTreeLogger
+    _rt = RawTreeLogger()
+except Exception:  # pragma: no cover  (sin rawtree_logger → sin observabilidad)
+    _rt = None  # type: ignore[assignment]
+
 CAP = 2000.0
 P_MAX = 500.0
 ETA = math.sqrt(0.9)
@@ -301,7 +308,23 @@ class BatteryAgent:
         v = 0.0 if truncated else float(np.quantile(w, V_QUANTILE))
         if self.cheap:
             return self._rule(w, soc, v, d0_max)
-        return self.lp.first_action(w, soc, v, d0_max)
+        p = self.lp.first_action(w, soc, v, d0_max)
+
+        # ── RawTree logging (offline-safe) ───────────────────────────────
+        try:
+            pfloat = float(p) if p is not None else 0.0
+            _rt.log_decision(
+                timestamp=obs.get("timestamp", ""),
+                idx=0, soc_kwh=soc, soc_pct=soc / CAP * 100 if CAP > 0 else 0,
+                cap_kwh=CAP, power_kw=pfloat,
+                price=price, co2=co2, load_net=net_prev if math.isfinite(net_prev) else 0,
+                mode="std", horizon=H, scenarios=0,
+                lp_time=0.0, elapsed_total=0.0,
+            )
+        except Exception:
+            pass
+
+        return p
 
     # ------------------------------------------------------------- helpers
     def _detect_offset(self, price, co2, vp, vc, consecutive):

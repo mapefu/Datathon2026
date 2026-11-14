@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime
 import json
 import math
+import time
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +26,13 @@ try:
     from scipy.optimize import linprog
 except Exception:  # pragma: no cover  (sin scipy → regla de reserva)
     sparse = linprog = None
+
+# ── RawTree observability (offline-safe) ──────────────────────────────────
+try:
+    from rawtree_logger import RawTreeLogger
+    _rt = RawTreeLogger()
+except Exception:  # pragma: no cover  (sin rawtree_logger → sin observabilidad)
+    _rt = None  # type: ignore[assignment]
 
 # ----------------------------------------------------------------------------- 1. constantes
 ETA = math.sqrt(0.90)
@@ -716,10 +724,29 @@ class BatteryAgent:
         else:
             v_T = float(np.quantile(w, V_Q[mode])) * (ETA if V_ETA[mode] else 1.0)
         c0, d0 = self._limits(soc)
+        t_lp = time.monotonic()
         try:
-            return self.lp.solve(w, N, soc, v_T, self.cap, self.pmax, c0, d0)
+            p = self.lp.solve(w, N, soc, v_T, self.cap, self.pmax, c0, d0)
         except Exception:
-            return self._rule(w, net, sig, soc)
+            p = self._rule(w, net, sig, soc)
+        lp_ms = (time.monotonic() - t_lp) * 1000
+
+        # ── RawTree logging (offline-safe) ───────────────────────────────
+        try:
+            pfloat = float(p) if p is not None else 0.0
+            _rt.log_decision(
+                timestamp=obs.get("timestamp", ""),
+                idx=idx, soc_kwh=soc, soc_pct=soc / self.cap * 100 if self.cap > 0 else 0,
+                cap_kwh=self.cap, power_kw=pfloat,
+                price=float(price[0]) if len(price) else 0, co2=float(co2[0]) if len(co2) else 0,
+                load_net=float(net[0]) if len(net) else 0,
+                mode=mode, horizon=H, scenarios=N.shape[1],
+                lp_time=lp_ms / 1000, elapsed_total=self.elapsed,
+            )
+        except Exception:  # pragma: no cover  (no bloquea si fallan)
+            pass
+
+        return p
 
     def _forecast(self, idx, n, k_obs):
         """Previsión de las n próximas horas del bloque actual + σ y régimen (0 noche, 1 día)."""
