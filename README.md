@@ -17,11 +17,32 @@ Programar un `BatteryAgent` que cada hora decide la potencia de una batería de 
 
 ## Lo que ya sabemos
 
-| | Score en validación (`--split val`) |
-|---|---|
-| Plantilla oficial (`starter_kit/agent.py`) | **0,00**: 9 infracciones por un bug de redondeo de η |
-| Plantilla corregida (`submission/agent.py`) | 1,38 |
-| Oráculo con información perfecta (LP) | **6,12**, el techo práctico |
+| | Validación | Año completo |
+|---|---|---|
+| Plantilla oficial (`starter_kit/agent.py`) | 0,00 (9 infracciones por un bug de redondeo de η) | — |
+| Plantilla con η corregida | 1,38 | 1,27 |
+| **Nuestro agente MPC (`submission/agent.py`)** | **6,09** | **5,67** |
+| Oráculo con información perfecta (LP), el techo | 6,12 | 5,67 |
+
+### El agente: control predictivo (MPC) con programación lineal
+
+Cada hora, `act(obs)`:
+1. Calcula el peso de cada hora de la ventana conocida: `w_k = co2_k + λ·precio_k`, con
+   `λ = (0,30/0,70)·(CO2_base/Coste_base) ≈ 0,253`. El cociente 0,59 kg/€ sale de train y es estable (0,57 en val).
+2. Resuelve un LP de 24 h con la dinámica exacta del simulador: maximiza `Σ w_k·(d_k − c_k)`.
+3. Ejecuta solo la primera hora (horizonte deslizante) y la recorta a los límites físicos con un margen
+   de 1e-6 kW, así que nunca hay infracciones.
+
+Detalles:
+- Si la ventana trae menos de 24 h, la evaluación termina dentro del horizonte y la batería se vacía.
+- La descarga de la hora actual se limita a la última carga neta observada. Así no se tira energía
+  durante cortes de datos ni los domingos a mediodía.
+- Controla el tiempo: si el LP acumula 40 s, pasa a una regla barata por ranking, que en validación saca 4,78.
+  En condiciones normales tarda ≈6 s en 2.016 h.
+
+Iguala al oráculo en train (5,55 = 5,55) y en el año completo. Si cada semana se evalúa por separado, saca
+6,47 frente a 6,49. Con la información de `obs` no queda margen apreciable: el resto de la diferencia se debe
+a que el oráculo conoce el futuro más allá de 24 h.
 
 - **La carga neta del campus casi siempre es > 500 kW** (en 5.962 de 5.993 h), así que la batería nunca
   "sobra" y el score es casi **lineal** en la potencia: descargar 1 kWh en la hora *t* vale

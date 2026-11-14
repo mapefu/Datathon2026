@@ -1,77 +1,99 @@
 """
-agent.py
-Plantilla oficial de l'agent de control per al repte de la bateria de UPC Sostenible.
-Datathon 2026.
+agent.py — BatteryAgent per al Repte UPC Sostenible (Datathon 2026).
+
+Estratègia: control predictiu (MPC) amb programació lineal.
+
+La càrrega neta del campus és gairebé sempre > 500 kW, de manera que el score és
+pràcticament lineal en la potència de la bateria: descarregar 1 kWh a l'hora t
+estalvia w_t = 70·co2_t/CO2_base + 30·preu_t/Cost_base punts, i carregar-lo en costa
+w_t. Com que obs dona el preu i el CO2 de les properes 24 h, a cada hora:
+
+  1. Calculem w_k ∝ co2_k + λ·preu_k per a la finestra coneguda.
+  2. Resolem un LP (24 h) que maximitza Σ w_k·(d_k − c_k) + v·SOC_final.
+  3. Executem només la primera hora (horitzó lliscant).
+
+v = valor residual de l'energia que queda a la bateria al final de la finestra
+(quantil de w de la finestra). Quan la finestra té < 24 h, s'ha acabat l'avaluació
+dins l'horitzó → v = 0 i la bateria es buida.
 """
 
 import math
-# import joblib  # Descomenteu si utilitzeu models serialitzats (.pkl)
+import time
+
+import numpy as np
+from scipy import sparse
+from scipy.optimize import linprog
+
+CAP = 2000.0
+P_MAX = 500.0
+ETA = math.sqrt(0.9)
+MARGE = 1e-6  # kW de marge per no tocar mai el límit físic exacte
+
+# λ = (0.30/0.70)·(CO2_base/Cost_base); CO2_base/Cost_base ≈ 0.59 kg/€ a train.
+LAMBDA = 0.30 / 0.70 * 0.59
+V_QUANTILE = 0.40
+# Pressupost de temps: el servidor talla a 60 s. Si ens hi acostem, passem a una regla
+# barata (sense LP) per no perdre el lliurament.
+TIME_BUDGET_S = 40.0
+
 
 class BatteryAgent:
-    def __init__(self):
-        """Inicialització de l'agent.
-        S'executa una sola vegada a l'inici del període d'avaluació.
-        Permet carregar models predictius o definir llindars d'operació.
-        """
-        # Paràmetres d'operació de la política de referència
-        self.llindar_preu_carrega = 0.08      # €/kWh
-        self.llindar_preu_descarrega = 0.16   # €/kWh
-        self.potencia_nominal_kw = 500.0      # Potència màxima de l'inversor (kW)
+    def __init__(self, lam: float = LAMBDA, v_quantile: float = V_QUANTILE):
+        self.lam = lam
+        self.v_quantile = v_quantile
+        self._lp_cache = {}
+        self._t_total = 0.0
 
-        # Memòria històrica d'hores passades (permet consultar el passat dins de la simulació):
-        # self.historial = []
+    # Matrius de l'LP per a un horitzó H (només canvien el cost i el SOC inicial).
+    # Variables: [c_0..c_{H-1}, d_0..d_{H-1}, s_0..s_{H-1}], s_k = SOC al final de l'hora k.
+    def _lp(self, H: int):
+        if H not in self._lp_cache:
+            I = sparse.identity(H, format="csr")
+            D = I - sparse.eye(H, k=-1, format="csr")
+            A_eq = sparse.hstack([-ETA * I, I / ETA, D], format="csr")
+            self._lp_cache[H] = A_eq
+        return self._lp_cache[H]
 
     def act(self, obs: dict) -> float:
-        """Determina la consigna de potència activa de la bateria per a l'hora actual.
+        soc = float(obs["soc_kwh"])
+        preus = np.asarray(obs["preus_properes_24h"], dtype=float)
+        co2 = np.asarray(obs["co2_properes_24h"], dtype=float)
+        H = min(len(preus), len(co2))
+        if H == 0:
+            return 0.0
+        w = co2[:H] + self.lam * preus[:H]
 
-        Paràmetres:
-        -----------
-        obs : dict amb les variables d'estat disponibles a l'hora actual:
-            - "timestamp": pd.Timestamp amb la data i hora d'avaluació.
-            - "hour": int de 0 a 23 (hora del dia).
-            - "day_of_week": int de 0 (dilluns) a 6 (diumenge).
-            - "soc_kwh": float amb l'energia emmagatzemada actual (0.0 a 2.000.0 kWh).
-            - "soc_pct": float amb l'estat de càrrega relatiu [0.0, 1.0].
-            - "preu_actual": float amb el preu del PVPC d'aquesta hora (€/kWh).
-            - "co2_actual": float amb la intensitat de CO2 peninsular (kg CO2/kWh).
-            - "preus_properes_24h": llista de preus horaris de les properes 24 hores (€/kWh).
-            - "co2_properes_24h": llista de factors d'emissió de CO2 de les properes 24 hores (kg/kWh).
-            - "noves_dades_5min": dades mesurades pels sensors en la darrera hora transcorreguda.
+        # Finestra incompleta → l'avaluació acaba dins l'horitzó: l'energia final no val res.
+        v = float(np.quantile(w, self.v_quantile)) if H >= 24 else 0.0
 
-        Retorna:
-        --------
-        float : Consigna de potència activa en kW:
-            > 0  -> Càrrega d'energia des de la xarxa interna (fins a +500.0 kW).
-            < 0  -> Descàrrega d'energia cap al campus (fins a -500.0 kW).
-            = 0  -> Bateria en mode d'espera (0.0 kW).
-        """
-        hora = obs["hour"]
-        preu = obs["preu_actual"]
-        soc = obs["soc_pct"]
-        co2 = obs["co2_actual"]
+        # Límit de descàrrega útil a l'hora actual: si el campus consumeix menys de 500 kW
+        # (diumenges a migdia o caigudes de dades), l'excés s'aboca a la xarxa sense valor.
+        dades = obs.get("noves_dades_5min") or {}
+        net_prev = float(dades.get("ultim_consum_kw", 1e9)) - float(dades.get("ultima_solar_kw", 0.0))
+        d0_max = min(P_MAX, max(0.0, net_prev))
 
-        # Política heurística de referència basada en regles temporals:
-        consigna = 0.0
-        # 1. Període vall nocturn (01:00 a 06:00): Càrrega en hores de baixa emissió i baix cost
-        if 1 <= hora <= 6 and preu < self.llindar_preu_carrega and soc < 0.85:
-            consigna = 350.0
+        cost = np.concatenate([w, -w, np.zeros(H)])
+        cost[-1] -= v
+        b_eq = np.zeros(H)
+        b_eq[0] = soc
+        bounds = [(0.0, P_MAX)] * (2 * H) + [(0.0, CAP)] * H
+        bounds[H] = (0.0, d0_max)
 
-        # 2. Període solar central (11:00 a 15:00): Càrrega d'aprofitament amb preus moderats
-        elif 11 <= hora <= 15 and preu < 0.10 and soc < 0.95:
-            consigna = 250.0
+        p = None
+        if self._t_total < TIME_BUDGET_S:
+            t0 = time.perf_counter()
+            sol = linprog(cost, A_eq=self._lp(H), b_eq=b_eq, bounds=bounds, method="highs")
+            self._t_total += time.perf_counter() - t0
+            if sol.success:
+                p = float(sol.x[0] - sol.x[H])
+        if p is None:  # Regla de reserva: carregar a les hores més netes/barates, descarregar a les pitjors.
+            rank = float(np.mean(w <= w[0]))
+            p = P_MAX if rank <= 0.25 else (-d0_max if rank >= 0.75 else 0.0)
 
-        # 3. Període punta vespertí (18:00 a 22:00): Descàrrega per cobrir la demanda màxima del campus
-        elif 18 <= hora <= 22 and (preu > self.llindar_preu_descarrega or co2 > 0.10) and soc > 0.15:
-            consigna = -450.0
-
-        # Clamping de seguretat física per evitar infraccions de retallada (clipping):
-        # Capacitat màxima: 2.000 kWh, Rendiment: sqrt(0.90) ~= 0.9487
-        soc_kwh = float(obs["soc_kwh"])
-        # FIX: el simulador usa sqrt(0.9) exacto (0.948683...). Con 0.9487 la plantilla
-        # pedía algo más de descarga de la permitida -> infracciones. Margen de 1e-6 kW.
-        rendiment_eta = math.sqrt(0.9)
-        marge = 1e-6
-        max_carrega = max(0.0, min(self.potencia_nominal_kw, (2000.0 - soc_kwh) / rendiment_eta - marge))
-        max_descarrega = max(0.0, min(self.potencia_nominal_kw, soc_kwh * rendiment_eta - marge))
-
-        return float(max(-max_descarrega, min(max_carrega, consigna)))
+        # Seguretat física: mai demanar més del que permeten inversor i SOC.
+        max_c = max(0.0, min(P_MAX, (CAP - soc) / ETA - MARGE))
+        max_d = max(0.0, min(P_MAX, soc * ETA - MARGE))
+        p = max(-max_d, min(max_c, p))
+        if abs(p) < 1e-3:
+            p = 0.0
+        return float(p)
