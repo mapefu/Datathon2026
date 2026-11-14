@@ -27,3 +27,6 @@ models/
 .DS_Store
 .vscode/
 .idea/
+
+# Zips de entrega generados (se regeneran con scripts/make_submission.py)
+submissions/*.zip

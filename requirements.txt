@@ -1,8 +1,12 @@
+# Mismas librerías que el servidor de evaluación (ver docs/ENUNCIAT.md)
 numpy
 pandas
+scipy
 scikit-learn
-matplotlib
-seaborn
-jupyter
-lightgbm
+joblib
 xgboost
+lightgbm
+# Solo desarrollo local
+matplotlib
+jupyter
+ipykernel
