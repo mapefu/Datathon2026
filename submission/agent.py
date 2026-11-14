@@ -20,7 +20,10 @@ Robustesa (no canvia res si les dades són exactes i completes):
     previsió tal qual. Si no, per a cada horitzó es tria entre la previsió més
     recent i la combinació de totes les previsions d'aquella hora, segons quina
     ha encertat més fins ara (vegeu _Previsor).
-  - NaN, claus que falten o qualsevol excepció → regla de reserva o 0 kW. Sempre es
+  - NaN, claus que falten, tipus inesperats (arrays, Series) o qualsevol excepció →
+    regla de reserva o 0 kW, i el pas següent torna a funcionar amb normalitat. Si falta
+    el SOC, es fa servir soc_pct/soc_percent o un model intern de la física; si no n'hi ha
+    cap, 0 kW. Sempre es
     retalla als límits físics: 0 infraccions.
 """
 
@@ -47,9 +50,20 @@ EWMA_ALPHA = 0.02     # memòria ≈ 50 observacions per horitzó
 MIN_OBS_ERR = 24      # observacions mínimes abans de fiar-se de la variància estimada
 VAR_EXACTA = 1e-12    # per sota d'això, la previsió es considera exacta
 
-# Pressupost de temps: el servidor talla a 60 s. Si ens hi acostem, passem a una regla
-# barata (sense LP) per no perdre el lliurament.
+# Pressupost de temps: el servidor talla a 60 s. Es mesura el temps real des de la primera
+# crida (inclou l'entorn, com al servidor). Si ens hi acostem, passem a una regla barata
+# (sense LP) per no perdre el lliurament.
 TIME_BUDGET_S = 40.0
+
+
+def _serie(x) -> np.ndarray:
+    """Converteix llista/array/Series/None en un array de floats (NaN si no és numèric). No llança mai."""
+    if x is None or isinstance(x, (str, bytes, dict)):
+        return np.empty(0)
+    try:
+        return np.array([_f(v) for v in x], dtype=float)
+    except TypeError:
+        return np.empty(0)
 
 
 def _f(x, default=float("nan")):
@@ -93,6 +107,8 @@ class _Previsor:
             actual = _f(previsio[0]) if len(previsio) else float("nan")
             if not math.isfinite(actual):
                 actual = self.hist[-1] if self.hist else 0.0
+        while len(self.hist) < n:  # passos perduts per una excepció: s'omplen perquè n quadri
+            self.hist.append(self.hist[-1] if self.hist else actual)
         escala = max(abs(actual), 1e-3)
         for k, v in self.pendents.pop(n, []):
             self._ewma(self.var, k, (v - actual) / escala)
@@ -124,7 +140,10 @@ class _Previsor:
                     w = 1.0 / self.var[kk]
                     num += w * v
                     den += w
-            comb = num / den if den > 0 else fresca
+            if den > 0:
+                comb = num / den
+            else:  # sense variàncies fiables: la previsió més recent que hi hagi per a aquella hora
+                comb = fresca if fresca is not None else (min(cands)[1] if cands else None)
             if comb is not None:
                 self.comb_pend.setdefault(n + k, []).append((k, comb))
             usa_comb = (
@@ -145,12 +164,13 @@ class BatteryAgent:
         self.v_quantile = v_quantile
         self.robust = robust
         self._lp_cache = {}
-        self._t_total = 0.0
+        self._t_inici = None
         self.n = 0
         self.preu = _Previsor()
         self.co2 = _Previsor()
         self.s_co2 = 0.0
         self.s_cost = 0.0
+        self._soc_model = None
 
     # Matrius de l'LP per a un horitzó H (només canvien el cost i el SOC inicial).
     # Variables: [c_0..c_{H-1}, d_0..d_{H-1}, s_0..s_{H-1}], s_k = SOC al final de l'hora k.
@@ -170,8 +190,12 @@ class BatteryAgent:
         return 0.30 / 0.70 * ratio
 
     def act(self, obs: dict) -> float:
-        soc = _f(obs.get("soc_kwh") if isinstance(obs, dict) else None, 0.0)
-        soc = min(max(soc, 0.0), CAP)
+        if self._t_inici is None:
+            self._t_inici = time.perf_counter()
+        soc = self._soc(obs)
+        if soc is None:  # sense SOC no es poden garantir 0 infraccions: no actuar
+            self._soc_model = None
+            return 0.0
         try:
             p = self._decideix(obs, soc)
         except Exception:
@@ -181,19 +205,33 @@ class BatteryAgent:
         max_c = max(0.0, min(P_MAX, (CAP - soc) / ETA - MARGE))
         max_d = max(0.0, min(P_MAX, soc * ETA - MARGE))
         p = max(-max_d, min(max_c, p))
-        return 0.0 if abs(p) < 1e-3 else float(p)
+        p = 0.0 if abs(p) < 1e-3 else float(p)
+        self._soc_model = soc + (ETA * p if p > 0 else p / ETA)
+        return p
+
+    def _soc(self, obs):
+        """SOC en kWh: soc_kwh → soc_pct → soc_percent → model intern → None."""
+        if not isinstance(obs, dict):
+            obs = {}
+        for key, esc in (("soc_kwh", 1.0), ("soc_pct", CAP), ("soc_percent", CAP / 100)):
+            v = _f(obs.get(key)) * esc
+            if math.isfinite(v):
+                return min(max(v, 0.0), CAP)
+        return self._soc_model
 
     def _decideix(self, obs: dict, soc: float) -> float:
         n = self.n
         self.n += 1
-        prev_p = np.array([_f(x) for x in (obs.get("preus_properes_24h") or [])], dtype=float)
-        prev_c = np.array([_f(x) for x in (obs.get("co2_properes_24h") or [])], dtype=float)
+        prev_p = _serie(obs.get("preus_properes_24h"))
+        prev_c = _serie(obs.get("co2_properes_24h"))
         H = min(len(prev_p), len(prev_c))
 
-        # Carga neta de l'hora anterior → λ online i tope de descàrrega.
-        dades = obs.get("noves_dades_5min") or {}
+        # Càrrega neta de l'hora anterior → λ online i tope de descàrrega.
+        dades = obs.get("noves_dades_5min")
+        if not isinstance(dades, dict):
+            dades = {}
         net_prev = _f(dades.get("ultim_consum_kw"), 1e9) - _f(dades.get("ultima_solar_kw"), 0.0)
-        if n >= 1 and net_prev < 1e8:
+        if n >= 1 and net_prev < 1e8 and len(self.co2.hist) >= n and len(self.preu.hist) >= n:
             net = max(net_prev, 0.0)
             self.s_co2 += net * self.co2.hist[n - 1]
             self.s_cost += net * self.preu.hist[n - 1]
@@ -218,8 +256,7 @@ class BatteryAgent:
         d0_max = min(P_MAX, max(0.0, net_prev))
 
         p = None
-        if self._t_total < TIME_BUDGET_S:
-            t0 = time.perf_counter()
+        if time.perf_counter() - self._t_inici < TIME_BUDGET_S:
             cost = np.concatenate([w, -w, np.zeros(H)])
             cost[-1] -= v
             b_eq = np.zeros(H)
@@ -227,7 +264,6 @@ class BatteryAgent:
             bounds = [(0.0, P_MAX)] * (2 * H) + [(0.0, CAP)] * H
             bounds[H] = (0.0, d0_max)
             sol = linprog(cost, A_eq=self._lp(H), b_eq=b_eq, bounds=bounds, method="highs")
-            self._t_total += time.perf_counter() - t0
             if sol.success:
                 p = float(sol.x[0] - sol.x[H])
         if p is None:  # Regla de reserva: carregar a les hores més netes/barates, descarregar a les pitjors.

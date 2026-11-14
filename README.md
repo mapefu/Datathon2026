@@ -37,7 +37,8 @@ Detalles:
 - Si la ventana trae menos de 24 h, la evaluación termina dentro del horizonte y la batería se vacía.
 - La descarga de la hora actual se limita a la última carga neta observada. Así no se tira energía
   durante cortes de datos ni los domingos a mediodía.
-- Controla el tiempo: si el LP acumula 40 s, pasa a una regla barata por ranking, que en validación saca 4,78.
+- Controla el tiempo: si pasan 40 s de tiempo real desde la primera llamada, pasa a una regla barata por ranking,
+  que en validación saca 4,78.
   En condiciones normales tarda ≈6 s en 2.016 h.
 
 Iguala al oráculo en train (5,55 = 5,55) y en el año completo. Si cada semana se evalúa por separado, saca
@@ -61,20 +62,52 @@ datos sucios. El agente se adapta midiendo lo que ve y no cambia nada si los dat
 - **λ online**: el cociente CO₂/coste se actualiza con las horas ya vividas (prior de train con peso de una semana).
 - **Previsiones con error**: compara lo que se previó con lo que luego pasa y, para cada horizonte, usa la
   previsión más reciente o la combinación de todas las previsiones de esa hora, según cuál haya acertado más.
-- **Datos sucios**: NaN, claves que faltan o cualquier excepción terminan en la regla de reserva o en 0 kW,
-  siempre con recorte físico.
+- **Datos sucios**: NaN, claves que faltan, tipos inesperados (arrays, Series) o cualquier excepción terminan
+  en la regla de reserva o en 0 kW, siempre con recorte físico, y el paso siguiente vuelve a funcionar con
+  normalidad. Un NaN en una previsión se rellena con la previsión anterior para esa misma hora.
+- **SOC ausente**: se usa `soc_pct`, `soc_percent` o un modelo interno de la física; si no hay ninguno, 0 kW.
 
-| Escenario | Versión anterior | Actual | Óptimo |
-|---|---|---|---|
-| Validación exacta | 6,09 | **6,10** | 6,12 |
-| Año completo / semanas separadas | 5,67 / 6,47 | 5,67 / 6,47 | 5,67 / — |
-| Ruido 10 % / 20 % / 30 % (independiente) | 6,07 / 6,02 / 5,93 | **6,09 / 6,08 / 6,05** | — |
-| Ruido 20 % / 30 % (correlado entre previsiones) | 6,02 / 5,95 | 6,02 / 5,94 | — |
-| NaN 5 % + `timestamp` como string | **FALLA** (excepción) | 6,08 | — |
-| Tiempo por 2.016 h | 5,1 s | 5,8 s | límite 60 s |
+| Escenario | v1 (sin robustez) | v2 | **Actual** | Óptimo |
+|---|---|---|---|---|
+| Validación exacta | 6,09 | 6,10 | **6,10** | 6,12 |
+| Año completo / semanas separadas | 5,67 / 6,47 | 5,67 / 6,47 | 5,67 / 6,47 | 5,67 / — |
+| Ruido 10 % / 20 % / 30 % (independiente) | 6,07 / 6,02 / 5,93 | 6,09 / 6,08 / 6,05 | **6,09 / 6,08 / 6,05** | — |
+| Ruido 20 % / 30 % (correlado entre previsiones) | 6,02 / 5,95 | 6,02 / 5,94 | 6,02 / 5,94 | — |
+| NaN 5 % + `timestamp` como string | **FALLA** (excepción) | 6,08 | **6,10** | — |
+| NaN 20 % | — | 5,97 | **6,10** | — |
+| Previsiones como `np.array` | — | **0,00** (excepción en cada hora) | **6,10** | — |
+| Una sola observación malformada (hora 50) | — | **0,29** (se queda en 0 kW para siempre) | **6,10** | — |
+| Sin `soc_kwh` (quedan `soc_pct` y `soc_percent`) | — | **0,00** (896 infracciones) | **6,10** | — |
+| Tiempo por 2.016 h | 5,1 s | 5,8 s | 5,9 s | límite 60 s |
 
 En validación exacta, todo el hueco con el óptimo se debe al corte de sensores del 17–18 de junio, que es
 imposible de prever. Sin esas horas, agente = óptimo = 6,12.
+
+### ¿Mejoraría un modelo de predicción? (`python scripts/headroom.py`)
+
+Para acotar lo que puede aportar cualquier modelo predictivo, le damos al mismo MPC el futuro **real**
+(predicción perfecta) y medimos cuánto sube el score. Cada semana se evalúa por separado:
+
+| Información extra (perfecta) | Validación (11 semanas) | Todo el año (184 ventanas de 7 días) |
+|---|---|---|
+| λ real de la semana (cociente CO₂/coste) | +0,003 | +0,004 |
+| … + precio y CO₂ a 48 h o 72 h | +0,003 (= nada más) | +0,004 (= nada más) |
+| … + carga neta real de las próximas 24 h | +0,026 | +0,018 |
+| Oráculo de la semana entera | +0,027 | +0,018 |
+
+- **Predecir precio/CO₂ más allá de 24 h no aporta nada.** La batería hace un ciclo diario (≈4 h de carga y
+  ≈4 h de descarga) y las 24 h de `obs` ya contienen ese ciclo.
+- **Predecir consumo o solar solo aporta en los cortes de sensores.** Fuera de la semana del 17 de junio la
+  ganancia es 0: la carga neta no baja de ≈500 kW ni en Navidad ni en agosto. El corte empieza tras un hueco de
+  datos y termina sin aviso: en la primera hora de vuelta, el agente aún ve 0 kW de la hora anterior y no
+  descarga. Esa hora explica ≈0,20 de los 0,25 perdidos en junio. Las reglas de detección probadas (sin tope,
+  tope binario) empatan o pierden hasta 0,5.
+- **λ es una apuesta sobre cómo puntúa el servidor.** Un λ por semana gana +0,003 si se promedian puntuaciones
+  semanales, pero pierde entre −0,003 y −0,006 si se puntúa el agregado de todas las semanas (lo que sugieren
+  los kg/€ del leaderboard). El λ online actual queda a ≤0,003 del mejor en los dos casos.
+
+Conclusión: con la información de `obs`, el agente está en el óptimo alcanzable. El hueco restante son
+cortes de sensores imprevisibles.
 
 ## Estructura
 
@@ -84,10 +117,12 @@ imposible de prever. Sin esas horas, agente = óptimo = 6,12.
 ├── src/datathon/
 │   ├── data.py          # CSV de 5 min → tabla horaria (caché en data/processed/hourly.csv) + split train/val
 │   ├── evaluate.py      # simulador oficial, score oficial, desglose por mes y oráculo LP
-│   └── stress.py        # escenarios de estrés: ruido, NaN, semanas separadas, tiempo
+│   ├── stress.py        # escenarios de estrés: ruido, NaN, semanas separadas, tiempo
+│   └── headroom.py      # cota de lo que aportaría una predicción perfecta (agentes "tramposos")
 ├── scripts/
 │   ├── evaluate.py      # CLI para comparar agentes
 │   ├── stress_test.py   # CLI con la tabla de robustez
+│   ├── headroom.py      # CLI: ¿ayudaría un modelo de predicción mejor?
 │   └── make_submission.py  # submission/ → submissions/submission_<fecha>.zip + validador oficial
 ├── notebooks/01_exploracion.ipynb
 ├── starter_kit/         # kit oficial (sin modificar): environment.py, check_submission.py, tutorial
