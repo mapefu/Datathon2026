@@ -66,8 +66,12 @@ class BatteryAgent:
         # Clamping de seguretat física per evitar infraccions de retallada (clipping):
         # Capacitat màxima: 2.000 kWh, Rendiment: sqrt(0.90) ~= 0.9487
         soc_kwh = float(obs["soc_kwh"])
-        rendiment_eta = 0.9487
-        max_carrega = min(self.potencia_nominal_kw, (2000.0 - soc_kwh) / rendiment_eta)
-        max_descarrega = min(self.potencia_nominal_kw, soc_kwh * rendiment_eta)
+        # Valor exacte (no 0.9487): l'arrodoniment feia demanar una mica més del que
+        # el simulador permet i comptava com a infracció. El marge de 1e-6 kW cobreix
+        # possibles diferències de coma flotant.
+        rendiment_eta = 0.9 ** 0.5
+        marge = 1e-6
+        max_carrega = max(0.0, min(self.potencia_nominal_kw, (2000.0 - soc_kwh) / rendiment_eta - marge))
+        max_descarrega = max(0.0, min(self.potencia_nominal_kw, soc_kwh * rendiment_eta - marge))
 
         return float(max(-max_descarrega, min(max_carrega, consigna)))
