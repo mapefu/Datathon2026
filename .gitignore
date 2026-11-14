@@ -29,3 +29,6 @@ models/
 
 # Zips de entrega generados (se regeneran con scripts/make_submission.py)
 submissions/*.zip
+
+# Modelos del Mode Difícil (se regeneran con: python scripts/hard.py train --all)
+submission_dificil/modelos_dificil.json
