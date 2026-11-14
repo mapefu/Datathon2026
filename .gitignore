@@ -1,7 +1,6 @@
 # Data (no subir datasets al repo)
 data/raw/*
 data/processed/*
-data/external/*
 !data/**/.gitkeep
 
 # Python

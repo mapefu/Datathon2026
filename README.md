@@ -21,7 +21,7 @@ Programar un `BatteryAgent` que cada hora decide la potencia de una batería de 
 |---|---|---|
 | Plantilla oficial (`starter_kit/agent.py`) | 0,00 (9 infracciones por un bug de redondeo de η) | — |
 | Plantilla con η corregida | 1,38 | 1,27 |
-| **Nuestro agente MPC (`submission/agent.py`)** | **6,09** | **5,67** |
+| **Nuestro agente MPC (`submission/agent.py`)** | **6,10** | **5,67** |
 | Oráculo con información perfecta (LP), el techo | 6,12 | 5,67 |
 
 ### El agente: control predictivo (MPC) con programación lineal
@@ -54,6 +54,28 @@ a que el oráculo conoce el futuro más allá de 24 h.
   **0 infracciones** siempre. `score_oficial` usa 1,0.
 - Noviembre de 2025 no está en los datos de train.
 
+### Robustez frente al servidor (`python scripts/stress_test.py`)
+
+No sabemos si el servidor da previsiones exactas, qué cociente CO₂/coste tendrá el test ni si llegarán
+datos sucios. El agente se adapta midiendo lo que ve y no cambia nada si los datos son exactos:
+- **λ online**: el cociente CO₂/coste se actualiza con las horas ya vividas (prior de train con peso de una semana).
+- **Previsiones con error**: compara lo que se previó con lo que luego pasa y, para cada horizonte, usa la
+  previsión más reciente o la combinación de todas las previsiones de esa hora, según cuál haya acertado más.
+- **Datos sucios**: NaN, claves que faltan o cualquier excepción terminan en la regla de reserva o en 0 kW,
+  siempre con recorte físico.
+
+| Escenario | Versión anterior | Actual | Óptimo |
+|---|---|---|---|
+| Validación exacta | 6,09 | **6,10** | 6,12 |
+| Año completo / semanas separadas | 5,67 / 6,47 | 5,67 / 6,47 | 5,67 / — |
+| Ruido 10 % / 20 % / 30 % (independiente) | 6,07 / 6,02 / 5,93 | **6,09 / 6,08 / 6,05** | — |
+| Ruido 20 % / 30 % (correlado entre previsiones) | 6,02 / 5,95 | 6,02 / 5,94 | — |
+| NaN 5 % + `timestamp` como string | **FALLA** (excepción) | 6,08 | — |
+| Tiempo por 2.016 h | 5,1 s | 5,8 s | límite 60 s |
+
+En validación exacta, todo el hueco con el óptimo se debe al corte de sensores del 17–18 de junio, que es
+imposible de prever. Sin esas horas, agente = óptimo = 6,12.
+
 ## Estructura
 
 ```
@@ -61,9 +83,11 @@ a que el oráculo conoce el futuro más allá de 24 h.
 ├── submission/          # ← LO QUE SE ENTREGA: agent.py + .pkl/.json auxiliares
 ├── src/datathon/
 │   ├── data.py          # CSV de 5 min → tabla horaria (caché en data/processed/hourly.csv) + split train/val
-│   └── evaluate.py      # simulador oficial, score oficial, desglose por mes y oráculo LP
+│   ├── evaluate.py      # simulador oficial, score oficial, desglose por mes y oráculo LP
+│   └── stress.py        # escenarios de estrés: ruido, NaN, semanas separadas, tiempo
 ├── scripts/
 │   ├── evaluate.py      # CLI para comparar agentes
+│   ├── stress_test.py   # CLI con la tabla de robustez
 │   └── make_submission.py  # submission/ → submissions/submission_<fecha>.zip + validador oficial
 ├── notebooks/01_exploracion.ipynb
 ├── starter_kit/         # kit oficial (sin modificar): environment.py, check_submission.py, tutorial
