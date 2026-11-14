@@ -1,0 +1,63 @@
+== entrenando pliegue A → /home/marc/Projects/DataDificil/data/processed/folds/default/A
+  filas: base 237,168 + arranque en frío 20,832 (868 decisiones) en 24 s
+  OOF grupo 0 listo
+  OOF grupo 1 listo
+  OOF grupo 2 listo
+  sigma_hard: MAE neta OOF h0 89.5 kW, h1–2 122.9, h3–23 136.5
+  sigma_std: MAE neta OOF h0 35.6 kW, h1–2 49.6, h3–23 61.5
+  load@0       6,544 filas, 300 árboles (1.7 s)
+  load@1      12,985 filas, 300 árboles (4.0 s)
+  load@3     135,556 filas, 300 árboles (14.5 s)
+  pv@0         2,404 filas, 300 árboles (1.3 s)
+  pv@1         4,774 filas, 300 árboles (1.3 s)
+  pv@3        49,443 filas, 300 árboles (3.2 s)
+  price@3     24,250 filas, 300 árboles (3.5 s)
+  price@8     88,961 filas, 300 árboles (12.2 s)
+  co2@3       24,250 filas, 300 árboles (4.7 s)
+  co2@8       88,961 filas, 300 árboles (11.6 s)
+  sigma_hard  94,564 filas, 150 árboles (2.4 s)
+  sigma_std   94,564 filas, 150 árboles (3.3 s)
+  paridad bosque numpy vs LightGBM: máx |Δ| = 0.00e+00
+  bundle 1.87 MB, 3300 árboles, 182,100 nodos; total 177 s
+== entrenando pliegue B → /home/marc/Projects/DataDificil/data/processed/folds/default/B
+  filas: base 237,168 + arranque en frío 20,832 (868 decisiones) en 34 s
+  OOF grupo 0 listo
+  OOF grupo 1 listo
+  OOF grupo 2 listo
+  sigma_hard: MAE neta OOF h0 85.6 kW, h1–2 115.4, h3–23 133.4
+  sigma_std: MAE neta OOF h0 36.6 kW, h1–2 52.0, h3–23 67.6
+  load@0       6,529 filas, 300 árboles (2.4 s)
+  load@1      13,066 filas, 300 árboles (3.3 s)
+  load@3     134,870 filas, 300 árboles (9.5 s)
+  pv@0         2,411 filas, 300 árboles (0.8 s)
+  pv@1         4,792 filas, 300 árboles (1.8 s)
+  pv@3        49,538 filas, 300 árboles (6.0 s)
+  price@3     24,000 filas, 300 árboles (4.9 s)
+  price@8     85,731 filas, 300 árboles (10.1 s)
+  co2@3       24,000 filas, 300 árboles (5.6 s)
+  co2@8       85,731 filas, 300 árboles (10.3 s)
+  sigma_hard  94,721 filas, 150 árboles (3.6 s)
+  sigma_std   94,721 filas, 150 árboles (2.3 s)
+  paridad bosque numpy vs LightGBM: máx |Δ| = 0.00e+00
+  bundle 1.86 MB, 3300 árboles, 182,100 nodos; total 206 s
+== entrenando pliegue full → /home/marc/Projects/DataDificil/submission
+  filas: base 237,168 + arranque en frío 29,688 (1237 decisiones) en 28 s
+  OOF grupo 0 listo
+  OOF grupo 1 listo
+  OOF grupo 2 listo
+  sigma_hard: MAE neta OOF h0 84.1 kW, h1–2 116.7, h3–23 135.7
+  sigma_std: MAE neta OOF h0 35.3 kW, h1–2 49.8, h3–23 66.5
+  load@0       9,289 filas, 300 árboles (1.5 s)
+  load@1      18,604 filas, 300 árboles (5.4 s)
+  load@3     193,616 filas, 300 árboles (16.2 s)
+  pv@0         3,491 filas, 300 árboles (0.9 s)
+  pv@1         6,968 filas, 300 árboles (1.4 s)
+  pv@3        72,476 filas, 300 árboles (6.4 s)
+  price@3     33,515 filas, 300 árboles (5.3 s)
+  price@8    124,396 filas, 300 árboles (11.2 s)
+  co2@3       33,515 filas, 300 árboles (4.9 s)
+  co2@8      124,396 filas, 300 árboles (9.2 s)
+  sigma_hard 136,689 filas, 150 árboles (3.7 s)
+  sigma_std  136,689 filas, 150 árboles (2.6 s)
+  paridad bosque numpy vs LightGBM: máx |Δ| = 0.00e+00
+  bundle 1.91 MB, 3300 árboles, 182,100 nodos; total 214 s
