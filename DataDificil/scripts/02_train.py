@@ -25,6 +25,7 @@ def main() -> None:
     ap.add_argument("--fold", nargs="*", default=[])
     ap.add_argument("--eval", nargs="*", default=[])
     ap.add_argument("--tag", default="default")
+    ap.add_argument("--out", default=None, help="directorio de salida de --fold full (por defecto submission/)")
     ap.add_argument("--rounds", type=int, default=None)
     ap.add_argument("--lgb", nargs="*", default=[], help="parámetros LightGBM comunes, p. ej. max_depth=8")
     args = ap.parse_args()
@@ -38,7 +39,7 @@ def main() -> None:
             k, v = kv.split("=", 1)
             T.LGB_BASE[k] = json.loads(v)
 
-        out = SUBMISSION if fold == "full" else fold_dir(fold, args.tag)
+        out = (Path(args.out).resolve() if args.out else SUBMISSION) if fold == "full" else fold_dir(fold, args.tag)
         print(f"== entrenando pliegue {fold} → {out}", flush=True)
         train_bundle(masked_full(full, sim, fold), out, fold, args.rounds,
                      log=lambda m: print(m, flush=True))

@@ -17,6 +17,7 @@ Salida: `bundle.npz` (memoria, calendario, bosque fundido, tablas) + `params.jso
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -41,26 +42,32 @@ def model_specs(ag) -> list[dict]:
     cal_l = ["h", "hour_tau", "hour_t", "dow_tau", "daytype_tau", "daytype_t", "act_tau", "night_tau",
              "night_anchor"]
     load_cols = cal_l + list(ag.LOAD_FEATS)
-    pv_cols = ["h", "hour_tau", "hour_t", "hour_utc_tau"] + list(ag.PV_FEATS)
+    pv_cols = ["h", "hour_tau", "hour_t", "hour_utc_tau"] + list(ag.PV_FEATS) + list(getattr(ag, "PV_METEO_FEATS", []))
+    # ablaciones: DD_PV_EXTRA="c_lvl_d1,p_lvl_d1" añade variables a los modelos de solar
+    pv_cols += [c for c in os.environ.get("DD_PV_EXTRA", "").split(",") if c]
 
     def mkt_cols(px, py):
         c = ["h", "hour_tau", "hour_t", "dow_tau", "daytype_tau", "period_tau", "period_a"]
         c += [f"{px}_{s}" for s in ag.MKT_STEMS] + (["p24_adj"] if px == "p" else [])
-        return c + [f"{py}_0", f"{py}_2", f"{py}_lvl_d1", "k_day", "k_yday"]
+        c += [f"{py}_0", f"{py}_2", f"{py}_lvl_d1", "k_day", "k_yday"]
+        return c + [e.format(x=px, y=py) for e in getattr(ag, "MKT_EXTRA", [])]
 
+    # DD_MKT_OBJ='{"co2": {"objective": "huber", "alpha": 0.01}}': objetivo por serie (load, k, price, co2)
+    OBJ = json.loads(os.environ.get("DD_MKT_OBJ", "{}"))
     sig_cols = ["h", "hour_tau", "daytype_tau", "act_tau", "night_tau", "night_anchor", "cs_tau", "k1",
                 "dk", "k_day", "L1", "dL"]
     S = []
     for name, lo, hi, nl, md in (("load@0", 0, 1, 15, 40), ("load@1", 1, 3, 31, 60), ("load@3", 3, 24, 31, 100)):
         S.append(dict(name=name, target="load", h_lo=lo, h_hi=hi, cols=load_cols, base="L_base",
-                      lgb=dict(num_leaves=nl, min_data_in_leaf=md), rounds=ROUNDS))
+                      lgb=dict(num_leaves=nl, min_data_in_leaf=md, **OBJ.get("load", {})), rounds=ROUNDS))
     for name, lo, hi, nl, md in (("pv@0", 0, 1, 15, 40), ("pv@1", 1, 3, 31, 60), ("pv@3", 3, 24, 31, 100)):
         S.append(dict(name=name, target="k", h_lo=lo, h_hi=hi, cols=pv_cols, base=None,
-                      lgb=dict(num_leaves=nl, min_data_in_leaf=md), rounds=ROUNDS))
+                      lgb=dict(num_leaves=nl, min_data_in_leaf=md, **OBJ.get("k", {})), rounds=ROUNDS))
     for var, px, py in (("price", "p", "c"), ("co2", "c", "p")):
         for name, lo, hi in ((f"{var}@3", 3, 8), (f"{var}@8", 8, 27)):
+            obj = OBJ.get(var, {})
             S.append(dict(name=name, target=var, h_lo=lo, h_hi=hi, cols=mkt_cols(px, py), base=f"{px}_2",
-                          lgb=dict(num_leaves=31, min_data_in_leaf=100), rounds=ROUNDS))
+                          lgb=dict(num_leaves=31, min_data_in_leaf=100, **obj), rounds=ROUNDS))
     for mode in ("hard", "std"):
         S.append(dict(name=f"sigma_{mode}", target=f"abs_r_{mode}", h_lo=0, h_hi=24, cols=sig_cols, base=None,
                       lgb=dict(num_leaves=31, min_data_in_leaf=200), rounds=SIG_ROUNDS))
@@ -133,15 +140,20 @@ class Rows:
             Xm = X[np.ix_(idx, cols)]
             w = np.maximum(X[idx, ag.FI["cs_tau"]], 0.0) if spec["target"] == "k" else np.ones(len(idx))
             parts.append((Xm, y[idx], w))
-            if spec["target"] == "load" and aug == "base":
+            if (spec["target"] == "load" or (spec["target"] == "k" and PV_METEO(ag))) and aug == "base":
                 nm = idx[self.nometeo[idx]]
                 Xn = X[np.ix_(nm, cols)].copy()
                 for f in ag.METEO_FEATS:
                     if f in spec["cols"]:
                         Xn[:, spec["cols"].index(f)] = np.nan
-                parts.append((Xn, y[nm], np.ones(len(nm))))
+                parts.append((Xn, y[nm], w[np.isin(idx, nm)] if spec["target"] == "k" else np.ones(len(nm))))
         Xm = np.vstack([p[0] for p in parts])
         return Xm, np.concatenate([p[1] for p in parts]), np.concatenate([p[2] for p in parts])
+
+
+def PV_METEO(ag) -> bool:
+    """El agente tiene variables de meteo en los modelos de solar (irradiancia de t−1)."""
+    return bool(getattr(ag, "PV_METEO_FEATS", []))
 
 
 def fit(spec: dict, Xm, y, w, rounds: int | None = None) -> lgb.Booster:
@@ -185,15 +197,15 @@ def net_residuals(R: Rows, specs, rounds, log) -> dict:
             del Xm
             band = held[(R.H[held] >= s["h_lo"]) & (R.H[held] < s["h_hi"])]
             for nm in (False, True):
-                if s["target"] == "k" and nm:
+                if s["target"] == "k" and nm and not PV_METEO(ag):
                     continue
                 oof[(s["name"], nm)][band] = predict(b, s, R.X[band], ag, no_meteo=nm)
         log(f"  OOF grupo {g} listo")
     bands_l = {"load@0": (0, 1), "load@1": (1, 3), "load@3": (3, 24)}
     bands_k = {"pv@0": (0, 1), "pv@1": (1, 3), "pv@3": (3, 24)}
-    k_hat = _combine({k: oof[(k, False)] for k in bands_k}, bands_k, R.H, n)
-    pv_hat = ag.pv_from_k(k_hat, R.X)
-    out = {"pv_hat": pv_hat}
+    pv_hats = {nm: ag.pv_from_k(_combine({k: oof[(k, nm if PV_METEO(ag) else False)] for k in bands_k},
+                                         bands_k, R.H, n), R.X) for nm in (False, True)}
+    out = {"pv_hat": pv_hats[False]}
     y_load, y_pv = R.Y["load"][R.T + R.H], R.Y["pv"][R.T + R.H]
     for mode, nm in (("hard", False), ("std", True)):
         lh = _combine({k: oof[(k, nm)] for k in bands_l}, bands_l, R.H, n)
@@ -203,7 +215,7 @@ def net_residuals(R: Rows, specs, rounds, log) -> dict:
             r0 = t * HF
             lh[r0:r0 + HF], exact[r0:r0 + HF] = ag.night_rule(lh[r0:r0 + HF], R.X[r0:r0 + HF], R.C, t, R.M)
         S = MODES[mode]["S"]
-        r = (y_load - lh) - S * (y_pv - pv_hat)
+        r = (y_load - lh) - S * (y_pv - pv_hats[nm])
         valid = (R.H < 24) & np.isfinite(r) & ~exact
         out[f"r_{mode}"] = np.where(valid, r, np.nan)
         out[f"load_hat_{mode}"] = lh

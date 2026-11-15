@@ -13,6 +13,11 @@ MPC con programación lineal (`scipy.optimize.linprog`). Python: `.venv/bin/pyth
 | 3 | `BatteryAgent` (detección de modo, LP, Safety Clamp) | hecho: Difícil P2 20,34 / P1 21,71; Estándar = referencia |
 | 4 | Verificación final, empaquetado, figuras, notebook | hecho: `dist/submission_*.zip` (1,8 MB) |
 
+**Entrega final: [`submission_v3/`](submission_v3/)** (variables de tendencia del mercado + pérdida Huber
+en precio y CO₂; modelos de CV en `data/processed/folds/hubcp`). CV Difícil: P1 21,77 / P2 20,39
+(oráculo 22,84 / 21,45). `submission/` es la v1 (P1 21,71 / P2 20,34) y `experimentos/` guarda las
+variantes descartadas. Resumen para el jurado en el [README principal](../README.md).
+
 ## Comandos
 
 ```bash

@@ -6,6 +6,8 @@ inferencia ven exactamente las mismas variables y los mismos límites de causali
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -15,7 +17,8 @@ from .paths import N_CAL, N_IDX, SUBMISSION
 
 
 def agent_module():
-    return load_agent_module(SUBMISSION / "agent.py")
+    # DD_AGENT: agente alternativo cuyas variables se usan para entrenar (p. ej. submission_v3/agent.py)
+    return load_agent_module(os.environ.get("DD_AGENT") or SUBMISSION / "agent.py")
 
 
 def memory(full: pd.DataFrame) -> dict[str, np.ndarray]:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,10 @@ from dd.score import aggregate, week_stats  # noqa: E402
 from dd.stress import StressEnv  # noqa: E402
 
 FILES = ("agent.py", "bundle.npz", "params.json")
+# DD_SUB_DIR / DD_ZIP_NAME: empaquetar una variante (p. ej. submission_v2 → dist/submission_v2_<fecha>.zip)
+SUB_DIR = ROOT / os.environ.get("DD_SUB_DIR", "submission")
+ZIP_NAME = os.environ.get("DD_ZIP_NAME", "submission")
+FOLD_TAG = os.environ.get("DD_FOLD_TAG", "default")
 ALLOWED_IMPORTS = {"__future__", "datetime", "json", "math", "pathlib", "numpy", "scipy"}
 FAILED: list[str] = []
 
@@ -48,11 +53,11 @@ def check(cond: bool, msg: str) -> None:
 
 
 def build_zip() -> Path:
-    out = ROOT / "dist" / f"submission_{datetime.now():%Y%m%d_%H%M}.zip"
+    out = ROOT / "dist" / f"{ZIP_NAME}_{datetime.now():%Y%m%d_%H%M}.zip"
     out.parent.mkdir(exist_ok=True)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for f in FILES:
-            z.write(ROOT / "submission" / f, arcname=f)
+            z.write(SUB_DIR / f, arcname=f)
     return out
 
 
@@ -127,7 +132,7 @@ def main() -> None:
     check(r.returncode == 0 and "VÀLIDA" in r.stdout, "check_submission.py: " + " | ".join(s.strip() for s in tail))
 
     print("3. Escáner AST")
-    errs = ast_scan(ROOT / "submission" / "agent.py")
+    errs = ast_scan(SUB_DIR / "agent.py")
     check(not errs, "imports y llamadas permitidas" + (f": {errs}" if errs else ""))
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -150,7 +155,7 @@ def main() -> None:
 
         print("5. Estrés (Difícil, 3 semanas, modelos del pliegue A)")
         w3 = wk["A"][5:8]
-        ov = {"BUNDLE_DIR": str(fold_dir("A")), "BLOCKS": blocks_of(w3),
+        ov = {"BUNDLE_DIR": str(fold_dir("A", FOLD_TAG)), "BLOCKS": blocks_of(w3),
               "TIME_SOFT_S": 1e12, "TIME_MID_S": 1e12, "TIME_HARD_S": 1e12}
         base = simulate(agent_zip, w3, "hard", overrides=ov)["score"]
         print(f"        referencia limpia: {base:.2f}")
@@ -181,7 +186,7 @@ def main() -> None:
 
         print("6. Fuga a nivel de agente")
         g = wk["A"][6]
-        ovl = {"BUNDLE_DIR": str(fold_dir("A")), "BLOCKS": blocks_of([g]),
+        ovl = {"BUNDLE_DIR": str(fold_dir("A", FOLD_TAG)), "BLOCKS": blocks_of([g]),
                "TIME_SOFT_S": 1e12, "TIME_MID_S": 1e12, "TIME_HARD_S": 1e12}
         ref = simulate(agent_zip, [g], "hard", overrides=ovl)["actions"]
         ok = True

@@ -1,4 +1,6 @@
 {
- "zip": "/home/marc/Projects/DataDificil/dist/submission_20261114_2312.zip",
- "failed": []
+ "zip": "/home/marc/Projects/Datathon2026/DataDificil/dist/submission_final_20261115_1200.zip",
+ "failed": [
+  "imports y llamadas permitidas: ['import no permitido: time', 'import no permitido: rawtree_logger']"
+ ]
 }

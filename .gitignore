@@ -32,3 +32,13 @@ submissions/*.zip
 
 # Modelos del Mode Difícil (se regeneran con: python scripts/hard.py train --all)
 submission_dificil/modelos_dificil.json
+
+# DataDificil: pliegues y zips de experimentos (se regeneran con 02_train.py / 04_package_verify.py).
+# Solo se versionan los pliegues default/d8/r150 (históricos) y hubcp (el de la entrega final).
+DataDificil/data/processed/folds/*
+!DataDificil/data/processed/folds/default/
+!DataDificil/data/processed/folds/d8/
+!DataDificil/data/processed/folds/r150/
+!DataDificil/data/processed/folds/hubcp/
+DataDificil/dist/*.zip
+DataDificil/experimentos/**/bundle.npz
